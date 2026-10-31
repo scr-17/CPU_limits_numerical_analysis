@@ -1,39 +1,23 @@
-
-def limpiar_coeficientes(coeficientes, tol=1e-9):
-    """Limpia coeficientes extremadamente cercanos a cero."""
-    return [0.0 if abs(c) < tol else c for c in coeficientes]
+"""Evaluación y formato de polinomios con coeficientes ascendentes."""
 
 
 def evaluar_polinomio(coeficientes, x):
-    resultado = 0.0
-    for i, coef in enumerate(coeficientes):
-        resultado += coef * (x ** i)
-    return resultado
+    total = 0.0
+    for coeficiente in reversed(coeficientes):
+        total = total * x + coeficiente
+    return total
 
 
-def formatear_polinomio(coeficientes, decimales=4):
+def formatear_polinomio(coeficientes, cifras_significativas=8):
     terminos = []
-    for i, c in enumerate(coeficientes):
-        if c == 0.0 and len(coeficientes) > 1:
+    for grado, coeficiente in enumerate(coeficientes):
+        if abs(coeficiente) < 1e-12:
             continue
-
-        valor_abs = round(abs(c), decimales)
-
-        if i == 0:
-            str_termino = f"{valor_abs}"
-        elif i == 1:
-            str_termino = f"{valor_abs}x" if valor_abs != 1 else "x"
-        else:
-            str_termino = f"{valor_abs}x^{i}" if valor_abs != 1 else f"x^{i}"
-
+        variable = "" if grado == 0 else ("t" if grado == 1 else f"t^{grado}")
+        magnitud = format(abs(coeficiente), f".{cifras_significativas}g")
+        termino = f"{magnitud}{variable}"
         if not terminos:
-            signo = "-" if c < 0 else ""
+            terminos.append(("-" if coeficiente < 0 else "") + termino)
         else:
-            signo = " - " if c < 0 else " + "
-
-        terminos.append(f"{signo}{str_termino}")
-
-    if not terminos:
-        return "P(x) = 0"
-
-    return "P(x) = " + "".join(terminos)
+            terminos.append((" - " if coeficiente < 0 else " + ") + termino)
+    return "P(t) = " + ("".join(terminos) if terminos else "0")
