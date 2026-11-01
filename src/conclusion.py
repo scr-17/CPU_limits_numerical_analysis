@@ -17,12 +17,14 @@ def redactar_conclusion(estado):
         resultado.append((estilo, texto.rstrip() + "\n\n"))
 
     if estado_especial == "sin_limite":
-        temperatura = estado.get("temperatura_final_sin_limite", meta)
+        temperatura = estado.get("temperatura_maxima_sin_limite", meta)
+        temperatura_final = estado.get("temperatura_final_sin_limite", temperatura)
         agregar("titulo_grande", "No necesitas limitar tu laptop")
         agregar(
             "destacado",
-            f"Con el 100 % del rendimiento, termina en {temperatura:.1f} °C, "
-            f"por debajo de tu meta de {meta:.1f} °C.",
+            f"Con el 100 % del rendimiento, el pico es {temperatura:.1f} °C y "
+            f"no supera tu meta de {meta:.1f} °C.\n"
+            f"La sesión termina en {temperatura_final:.1f} °C.",
         )
         _agregar_avisos(resultado, estado)
         agregar(
@@ -36,11 +38,11 @@ def redactar_conclusion(estado):
         return resultado
 
     if estado_especial == "meta_inalcanzable":
-        temperatura = estado.get("temperatura_final_minima", meta)
+        temperatura = estado.get("temperatura_maxima_minima", meta)
         agregar("titulo_grande", "Con estos datos no se alcanza esa temperatura")
         agregar(
             "destacado",
-            f"Aunque limites la laptop al mínimo, termina en {temperatura:.1f} °C. "
+            f"Aunque limites la laptop al mínimo, el pico es {temperatura:.1f} °C. "
             f"Tu meta es {meta:.1f} °C.",
         )
         agregar(
@@ -87,31 +89,48 @@ def redactar_conclusion(estado):
         return resultado
 
     recomendado_porcentaje = round(estado["limite_recomendado"] * 100)
-    sin_limite = estado["temperatura_final_sin_limite"]
-    con_limite = estado["temperatura_final_con_limite"]
+    pico_sin_limite = estado["temperatura_maxima_sin_limite"]
+    pico_con_limite = estado["temperatura_maxima_con_limite"]
+    final_con_limite = estado["temperatura_final_con_limite"]
     minuto = estado.get("minuto_en_que_llega_a_la_meta_sin_limite")
     perdida = round(estado["rendimiento_perdido"])
 
-    agregar(
-        "titulo_grande",
-        f"Para jugar {duracion} minutos sin pasar tu meta, limita el rendimiento al "
-        f"{recomendado_porcentaje} %.",
-    )
+    if estado.get("limite_recomendado_supera_meta"):
+        titulo = (
+            f"No se puede mantener tu meta de {meta:.1f} °C ni con el límite mínimo. "
+            f"El límite más bajo recomendado es {recomendado_porcentaje} %."
+        )
+    else:
+        titulo = (
+            f"Para jugar {duracion} minutos sin pasar tu meta, limita el rendimiento al "
+            f"{recomendado_porcentaje} %."
+        )
+    agregar("titulo_grande", titulo)
     if minuto is None:
         primera_linea = (
-            f"Si no haces nada: termina en {sin_limite:.1f} °C y no llega a tu meta "
+            f"Si no haces nada: el pico es {pico_sin_limite:.1f} °C y no llega a tu meta "
             f"de {meta:.1f} °C."
         )
     else:
         primera_linea = (
-            f"Si no haces nada: termina en {sin_limite:.1f} °C y pasa tu meta "
+            f"Si no haces nada: el pico es {pico_sin_limite:.1f} °C y pasa tu meta "
             f"de {meta:.1f} °C cerca del minuto {round(minuto)}."
+        )
+    if estado.get("limite_recomendado_supera_meta"):
+        linea_limite = (
+            f"Con el límite mínimo recomendado: el pico es {pico_con_limite:.1f} °C y "
+            f"aún supera tu meta de {meta:.1f} °C."
+        )
+    else:
+        linea_limite = (
+            f"Con el límite recomendado: el pico baja a {pico_con_limite:.1f} °C y "
+            f"no supera tu meta de {meta:.1f} °C."
         )
     agregar(
         "destacado",
         f"{primera_linea}\n"
-        f"Con el límite recomendado: termina en {con_limite:.1f} °C, "
-        f"por debajo de tu meta de {meta:.1f} °C.\n"
+        f"{linea_limite}\n"
+        f"La sesión termina en {final_con_limite:.1f} °C.\n"
         f"Lo que pierdes: cerca del {perdida} % del rendimiento máximo.",
     )
     _agregar_avisos(resultado, estado)
@@ -138,7 +157,8 @@ def redactar_conclusion(estado):
         "normal",
         "1. Con tus mediciones calculó cuánto exiges a la laptop en cada minuto.\n"
         "2. Calculó cómo se calienta y cómo la enfría el ventilador durante la sesión.\n"
-        "3. Probó límites a la mitad del rango hasta encontrar uno que llega a tu meta.",
+        "3. Probó límites a la mitad del rango hasta encontrar uno que mantiene la "
+        "temperatura máxima en tu meta.",
     )
     agregar("subtitulo", "¿Qué tan confiable es?")
     agregar("nota", _NOTA_CONFIABILIDAD)
@@ -177,8 +197,12 @@ def _detalle_tecnico(estado):
     tolerancia = estado.get("tolerancia", 0.5)
     error = estado.get("error_aproximado")
     polinomio = estado.get("polinomio", "No disponible")
-    limite_texto = "No se encontró" if limite is None else f"{limite:.4f}"
-    error_texto = "No disponible" if error is None or not math.isfinite(error) else f"{error:.8f}"
+    limite_texto = "No se encontró" if limite is None else f"{limite * 100:.4f} %"
+    error_texto = (
+        "No disponible"
+        if error is None or not math.isfinite(error)
+        else f"{error * 100:.6f} puntos porcentuales"
+    )
     return (
         f"Límite óptimo exacto: {limite_texto}\n"
         f"Iteraciones de bisección: {iteraciones}\n"

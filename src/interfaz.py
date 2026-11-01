@@ -310,8 +310,10 @@ class InterfazApp(tk.Tk):
         )
 
     @classmethod
-    def _temperatura_final(cls, limite, coeficientes, parametros, paso):
-        return cls._integrar(limite, coeficientes, parametros, paso)[1][-1]
+    def _temperatura_maxima(cls, limite, coeficientes, parametros, paso):
+        tiempos, temperaturas = cls._integrar(limite, coeficientes, parametros, paso)
+        indice = max(range(len(temperaturas)), key=temperaturas.__getitem__)
+        return temperaturas[indice], tiempos[indice]
 
     @staticmethod
     def _formatear_tabla(encabezados, filas):
@@ -360,15 +362,28 @@ class InterfazApp(tk.Tk):
             )
 
             paso, _cantidad = self._paso_efectivo(parametros["t_final"], DATOS_EJEMPLO["paso"])
+            paso_objetivo = min(paso, 1.0)
 
             def objetivo(limite):
-                return self._temperatura_final(limite, coeficientes, parametros, paso) - parametros["T_objetivo"]
+                temperatura_maxima, _ = self._temperatura_maxima(
+                    limite,
+                    coeficientes,
+                    parametros,
+                    paso_objetivo,
+                )
+                return temperatura_maxima - parametros["T_objetivo"]
 
             intervalo_inicial = DATOS_EJEMPLO["intervalo"]
             f_inferior = objetivo(intervalo_inicial[0])
             f_superior = objetivo(intervalo_inicial[1])
-            f_uno = objetivo(1.0)
-            temperatura_uno = f_uno + parametros["T_objetivo"]
+            xs_uno, temperaturas_uno = self._integrar(1.0, coeficientes, parametros, paso_objetivo)
+            indice_pico_uno = max(
+                range(len(temperaturas_uno)),
+                key=temperaturas_uno.__getitem__,
+            )
+            temperatura_maxima_uno = temperaturas_uno[indice_pico_uno]
+            temperatura_final_uno = temperaturas_uno[-1]
+            minuto_pico_uno = xs_uno[indice_pico_uno]
 
             self._mostrar(
                 "1. Interpolación",
@@ -398,7 +413,7 @@ class InterfazApp(tk.Tk):
             intervalo = None
             intervalo_cambiado = False
             estado_tipo = "normal"
-            if temperatura_uno <= parametros["T_objetivo"]:
+            if temperatura_maxima_uno <= parametros["T_objetivo"]:
                 estado_tipo = "sin_limite"
             else:
                 limite_minimo = DATOS_EJEMPLO["busqueda_minima"]
@@ -443,16 +458,25 @@ class InterfazApp(tk.Tk):
                     limite_minimo,
                     math.floor(limite_optimo * 20.0 + 1e-12) / 20.0,
                 )
-                temperatura_con_limite = self._temperatura_final(
+                xs_con_limite, temperaturas_con_limite = self._integrar(
                     limite_recomendado,
                     coeficientes,
                     parametros,
-                    paso,
+                    paso_objetivo,
                 )
+                indice_pico_con_limite = max(
+                    range(len(temperaturas_con_limite)),
+                    key=temperaturas_con_limite.__getitem__,
+                )
+                temperatura_maxima_con_limite = temperaturas_con_limite[indice_pico_con_limite]
+                temperatura_final_con_limite = temperaturas_con_limite[-1]
+                minuto_pico_con_limite = xs_con_limite[indice_pico_con_limite]
             else:
                 limite_optimo = None
                 limite_recomendado = None
-                temperatura_con_limite = None
+                temperatura_maxima_con_limite = None
+                temperatura_final_con_limite = None
+                minuto_pico_con_limite = None
 
             paso_fino = parametros["t_final"] / 360.0
             tiempos_finos, temperaturas_finas = runge_kutta(
@@ -469,14 +493,14 @@ class InterfazApp(tk.Tk):
             )
 
             if estado_tipo == "meta_inalcanzable":
-                temperatura_final_minima = self._temperatura_final(
+                temperatura_maxima_minima, _ = self._temperatura_maxima(
                     limite_minimo,
                     coeficientes,
                     parametros,
-                    paso,
+                    paso_objetivo,
                 )
             else:
-                temperatura_final_minima = None
+                temperatura_maxima_minima = None
 
             self._mostrar(
                 "3. Búsqueda de raíz",
@@ -494,7 +518,7 @@ class InterfazApp(tk.Tk):
 
             limite_recomendado_supera_meta = (
                 limite_recomendado is not None
-                and temperatura_con_limite > parametros["T_objetivo"]
+                and temperatura_maxima_con_limite > parametros["T_objetivo"]
             )
             paso_ajustado = not math.isclose(
                 paso,
@@ -508,9 +532,13 @@ class InterfazApp(tk.Tk):
                 "temperatura_meta": parametros["T_objetivo"],
                 "limite_optimo": limite_optimo,
                 "limite_recomendado": limite_recomendado,
-                "temperatura_final_sin_limite": temperatura_uno,
-                "temperatura_final_con_limite": temperatura_con_limite,
-                "temperatura_final_minima": temperatura_final_minima,
+                "temperatura_maxima_sin_limite": temperatura_maxima_uno,
+                "temperatura_final_sin_limite": temperatura_final_uno,
+                "minuto_del_pico_sin_limite": minuto_pico_uno,
+                "temperatura_maxima_con_limite": temperatura_maxima_con_limite,
+                "temperatura_final_con_limite": temperatura_final_con_limite,
+                "minuto_del_pico_con_limite": minuto_pico_con_limite,
+                "temperatura_maxima_minima": temperatura_maxima_minima,
                 "minuto_en_que_llega_a_la_meta_sin_limite": minuto_cruce,
                 "rendimiento_perdido": (
                     (1.0 - limite_recomendado) * 100.0
@@ -554,12 +582,13 @@ class InterfazApp(tk.Tk):
     ):
         lineas = [
             "BÚSQUEDA DEL LÍMITE DE RENDIMIENTO",
-            f"Meta de temperatura final: {meta:.2f} °C",
+            f"Meta de temperatura máxima: {meta:.2f} °C",
             "",
             "Para encontrar el límite, el programa probó un valor a la mitad del rango. "
             "Según el resultado, conservó la mitad donde está la solución y repitió el proceso. "
-            "En este modelo, la temperatura final cambia linealmente con el límite. "
-            "Aun así, usamos bisección para practicar un método que también sirve con modelos no lineales.",
+            "La meta se evalúa sobre el pico de temperatura de toda la sesión, no solo sobre el final. "
+            "Así, la bisección resuelve un problema no lineal y busca que el equipo no se sobrecaliente en ningún momento. "
+            "La búsqueda usa un paso interno más fino que la tabla de Runge-Kutta.",
             "",
             f"Rango inicial probado: {intervalo_inicial[0] * 100:.0f}% a {intervalo_inicial[1] * 100:.0f}%.",
             f"Diferencia en el primer extremo: {valor_inferior_inicial:.4f} °C.",
@@ -593,7 +622,7 @@ class InterfazApp(tk.Tk):
                     "Desde (%)",
                     "Hasta (%)",
                     "Prueba (%)",
-                    "Temperatura - meta (°C)",
+                    "Pico - meta (°C)",
                     "Cambio (%)",
                     "Decisión",
                 ],
@@ -701,7 +730,9 @@ class InterfazApp(tk.Tk):
                  for tiempo, temperatura in zip(tiempos, temperaturas)],
             ),
             "",
-            f"Sin limitar el rendimiento, la temperatura final estimada es {temperaturas[-1]:.4f} °C.",
+            f"Sin limitar el rendimiento, el pico estimado es {max(temperaturas):.4f} °C "
+            f"en el minuto {tiempos[temperaturas.index(max(temperaturas))]:.2f}.",
+            f"La temperatura final estimada es {temperaturas[-1]:.4f} °C.",
         ]
         return "\n".join(lineas)
 
