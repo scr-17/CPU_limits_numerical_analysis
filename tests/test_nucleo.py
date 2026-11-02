@@ -113,7 +113,7 @@ class ConclusionTests(unittest.TestCase):
 
         texto = "".join(seccion for _, seccion in redactar_conclusion(estado))
 
-        self.assertIn("pico", texto)
+        self.assertIn("Temperatura máxima", texto)
         self.assertIn("65 %", texto)
 
 
