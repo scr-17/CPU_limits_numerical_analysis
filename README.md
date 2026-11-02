@@ -6,14 +6,17 @@ Aplicación para estimar la temperatura de una laptop bajo distintas cargas de t
 
 ```text
 src/
-  interfaz.py
-  conclusion.py
-  interpolacion.py
-  modelo.py
-  polinomio.py
-  raices.py
-  runge_kutta.py
   main.py
+  configuracion.py
+  numerico/
+    interpolacion.py
+    polinomio.py
+    raices.py
+    runge_kutta.py
+  reportes/
+    conclusion.py
+  ui/
+    interfaz.py
 requirements.txt
 README.md
 tests/
@@ -44,10 +47,21 @@ python -m unittest discover -s tests -v
 2. **Runge-Kutta:** enseña las cuatro pendientes `k1` a `k4` de cada intervalo y la tabla de temperaturas resultante.
 3. **Búsqueda de raíz:** usa únicamente bisección, muestra la tabla de pruebas y busca automáticamente un intervalo con cambio de signo si el rango inicial no contiene la respuesta.
 4. **Resultado:** presenta una recomendación redondeada hacia abajo a múltiplos de 5 %, explica qué significa y cómo aplicarla. El detalle técnico queda al final.
+5. **Gráficas:** muestra la temperatura de la sesión comparando el 100 % del rendimiento con el límite recomendado, la línea de meta y los picos. Debajo se dibuja la carga interpolada del equipo.
 
 La búsqueda de raíz se hace sobre la **temperatura máxima de la sesión**, no solo sobre la temperatura final. Así se evita recomendar un límite que termine por debajo de la meta pero que haga un pico por encima de ella cuando la carga baja al final.
 
-La conclusión se redacta con `src/conclusion.py`, una función independiente de Tkinter que facilita probar los mensajes. El simulador incluye estimaciones del cruce de la meta y avisa cuando la respuesta requiere un intervalo distinto o un paso de cálculo ajustado.
+La conclusión se redacta con `src/reportes/conclusion.py`, una función independiente de Tkinter que facilita probar los mensajes. El simulador incluye estimaciones del cruce de la meta y avisa cuando la respuesta requiere un intervalo distinto o un paso de cálculo ajustado.
+
+## Guardar, cargar y exportar
+
+Desde el menú **Archivo** o desde la barra **Archivo:** de la ventana principal:
+
+- **Guardar datos...** guarda mediciones y parámetros en un archivo JSON.
+- **Cargar datos...** recupera un JSON guardado y actualiza la tabla.
+- **Exportar informe...** genera un TXT con parámetros, mediciones, resultados, conclusión y detalle de los tres métodos.
+
+Atajos: `Ctrl+O` para cargar, `Ctrl+S` para guardar y `Ctrl+E` para exportar.
 
 ## Caso de ejemplo
 

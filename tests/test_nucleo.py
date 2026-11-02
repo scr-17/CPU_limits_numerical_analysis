@@ -2,12 +2,12 @@
 
 import unittest
 
-from src.conclusion import redactar_conclusion
-from src.interfaz import InterfazApp
-from src.interpolacion import polinomio_unico
-from src.modelo import PARAMETROS_DEFECTO
-from src.polinomio import evaluar_polinomio
-from src.raices import biseccion
+from src.configuracion import PARAMETROS_DEFECTO
+from src.numerico.interpolacion import polinomio_unico
+from src.numerico.polinomio import evaluar_polinomio
+from src.numerico.raices import biseccion
+from src.reportes.conclusion import redactar_conclusion
+from src.ui.interfaz import InterfazApp
 
 
 class InterpolacionTests(unittest.TestCase):
@@ -58,6 +58,37 @@ class RestriccionDePicoTests(unittest.TestCase):
         resultado = biseccion(lambda limite: self.final(limite) - 80.0, 0.05, 1.0, 0.5)
 
         self.assertGreater(self.pico(resultado["raiz"]), 80.0)
+
+
+class DatosJsonTests(unittest.TestCase):
+    def test_lee_mediciones_y_parametros(self):
+        contenido = {
+            "parametros": {"T_objetivo": 75.0},
+            "mediciones": {"tiempo": [0, 30, 60], "uso": [40, 80, 60]},
+        }
+
+        tiempos, usos, parametros = InterfazApp._leer_datos_json(contenido)
+
+        self.assertEqual(tiempos, [0.0, 30.0, 60.0])
+        self.assertEqual(usos, [40.0, 80.0, 60.0])
+        self.assertEqual(parametros["T_objetivo"], 75.0)
+        self.assertEqual(parametros["alfa"], PARAMETROS_DEFECTO["alfa"])
+
+    def test_rechaza_tiempos_desordenados(self):
+        contenido = {
+            "mediciones": {"tiempo": [0, 60, 30], "uso": [40, 80, 60]},
+        }
+
+        with self.assertRaises(ValueError):
+            InterfazApp._leer_datos_json(contenido)
+
+    def test_rechaza_uso_fuera_de_rango(self):
+        contenido = {
+            "mediciones": {"tiempo": [0, 30], "uso": [40, 120]},
+        }
+
+        with self.assertRaises(ValueError):
+            InterfazApp._leer_datos_json(contenido)
 
 
 class ConclusionTests(unittest.TestCase):
