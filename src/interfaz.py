@@ -8,7 +8,7 @@ from tkinter import messagebox, ttk
 
 from .interpolacion import polinomio_unico
 from .modelo import DATOS_EJEMPLO, PARAMETROS_DEFECTO
-from .polinomio import formatear_polinomio
+from .polinomio import evaluar_polinomio, formatear_polinomio
 from .raices import biseccion, buscar_intervalo_cambio_signo
 from .runge_kutta import (
     crear_funcion,
@@ -30,6 +30,7 @@ class InterfazApp(tk.Tk):
         self.parametros = PARAMETROS_DEFECTO.copy()
         self.data_vars = []
         self._dialogo_parametros = None
+        self._datos_graficas = None
         self._estado_resultado_var = tk.StringVar(value="Ingresa datos y calcula.")
         self._crear_interfaz()
         self._generar_tabla(len(DATOS_EJEMPLO["tiempo"]))
@@ -59,6 +60,7 @@ class InterfazApp(tk.Tk):
         ttk.Entry(barra, width=5, textvariable=self.n_var).pack(side="left", padx=5)
         ttk.Button(barra, text="Actualizar tabla", command=self._actualizar_tabla).pack(side="left", padx=3)
         ttk.Button(barra, text="Cargar ejemplo", command=self._cargar_ejemplo).pack(side="left", padx=3)
+        ttk.Button(barra, text="Limpiar tabla", command=self._limpiar_tabla).pack(side="left", padx=3)
         ttk.Label(barra, textvariable=self._estado_resultado_var).pack(side="right", padx=8)
         ttk.Button(barra, text="Configuración térmica...", command=self._abrir_parametros).pack(
             side="right",
@@ -93,13 +95,13 @@ class InterfazApp(tk.Tk):
             salida.tag_configure(
                 "destacado",
                 font=("Arial", 11, "bold"),
-                foreground="#1B5E20",
-                background="#E8F5E9",
+                foreground="#263238",
                 spacing1=8,
                 spacing3=8,
                 lmargin1=10,
                 lmargin2=10,
                 rmargin=10,
+                underline=False,
             )
             salida.tag_configure(
                 "subtitulo",
@@ -142,6 +144,37 @@ class InterfazApp(tk.Tk):
             panel.columnconfigure(0, weight=1)
             self.texts[titulo] = salida
 
+        panel_graficas = ttk.Frame(self.notebook, padding=8)
+        self.notebook.add(panel_graficas, text="5. Gráficas")
+        panel_graficas.rowconfigure(1, weight=1)
+        panel_graficas.columnconfigure(0, weight=1)
+        selector = ttk.Frame(panel_graficas)
+        selector.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+        ttk.Label(selector, text="Gráfica:").pack(side="left", padx=(0, 6))
+        self.grafica_var = tk.StringVar(value="Uso del equipo")
+        selector_graficas = ttk.Combobox(
+            selector,
+            textvariable=self.grafica_var,
+            values=(
+                "Uso del equipo",
+                "Temperatura durante la sesión",
+                "Temperatura final según el límite",
+            ),
+            state="readonly",
+            width=38,
+        )
+        selector_graficas.pack(side="left")
+        selector_graficas.bind("<<ComboboxSelected>>", self._dibujar_grafica)
+        self.grafica_canvas = tk.Canvas(
+            panel_graficas,
+            background="white",
+            highlightthickness=1,
+            highlightbackground="#CFD8DC",
+        )
+        self.grafica_canvas.grid(row=1, column=0, sticky="nsew")
+        self.grafica_canvas.bind("<Configure>", self._dibujar_grafica)
+        self._dibujar_grafica()
+
     def _generar_tabla(self, cantidad):
         try:
             cantidad = int(cantidad)
@@ -175,12 +208,21 @@ class InterfazApp(tk.Tk):
 
     def _marcar_resultados_desactualizados(self, *_args):
         self._estado_resultado_var.set("Datos modificados; vuelve a calcular.")
+        self._datos_graficas = None
+        if hasattr(self, "grafica_canvas"):
+            self._dibujar_grafica()
 
     def _actualizar_tabla(self):
         try:
             self._generar_tabla(self.n_var.get())
         except ValueError as exc:
             messagebox.showerror("Tabla inválida", str(exc), parent=self)
+
+    def _limpiar_tabla(self):
+        for x_var, y_var in self.data_vars:
+            x_var.set("")
+            y_var.set("")
+        self._marcar_resultados_desactualizados()
 
     def _cargar_ejemplo(self):
         self._generar_tabla(len(DATOS_EJEMPLO["tiempo"]))
@@ -292,8 +334,6 @@ class InterfazApp(tk.Tk):
                 raise ValueError(f"El punto {indice} requiere tiempo >= 0 y uso entre 0 y 100%.")
             tiempos.append(tiempo)
             usos.append(uso)
-        if not tiempos or tiempos[0] != 0:
-            raise ValueError("La primera medición debe iniciar en el minuto 0.")
         if any(a >= b for a, b in zip(tiempos, tiempos[1:])):
             raise ValueError("Los tiempos deben estar en orden estrictamente creciente.")
         return tiempos, usos
@@ -303,7 +343,7 @@ class InterfazApp(tk.Tk):
         funcion = crear_funcion(limite, parametros, coeficientes)
         return runge_kutta(
             funcion,
-            0.0,
+            parametros["t_inicio"],
             parametros["T_inicial"],
             parametros["t_final"],
             paso,
@@ -347,19 +387,182 @@ class InterfazApp(tk.Tk):
             salida.insert(tk.END, texto, estilo)
         salida.configure(state="disabled")
 
+    def _dibujar_grafica(self, *_args):
+        canvas = self.grafica_canvas
+        canvas.delete("all")
+        ancho = max(canvas.winfo_width(), 360)
+        alto = max(canvas.winfo_height(), 280)
+        if self._datos_graficas is None:
+            canvas.create_text(
+                ancho / 2,
+                alto / 2,
+                text="Calcula con datos válidos para generar las gráficas.",
+                fill="#607D8B",
+                font=("Arial", 11),
+            )
+            return
+
+        nombre = self.grafica_var.get()
+        datos = self._datos_graficas
+        if nombre == "Uso del equipo":
+            grafica = {
+                "titulo": "Uso del equipo",
+                "eje_x": "Tiempo (min)",
+                "eje_y": "Uso (%)",
+                "series": [("P(t)", datos["uso_estimado"], "#1565C0")],
+                "marcadores": (datos["tiempos"], datos["usos"]),
+                "rango_y": (0.0, 100.0),
+            }
+        elif nombre == "Temperatura durante la sesión":
+            grafica = {
+                "titulo": "Temperatura durante la sesión (L = 100%)",
+                "eje_x": "Tiempo (min)",
+                "eje_y": "Temperatura (°C)",
+                "series": [("T(t)", datos["temperaturas"], "#E65100")],
+                "referencia_y": (datos["meta"], "Meta"),
+            }
+        else:
+            grafica = {
+                "titulo": "Temperatura final según el límite",
+                "eje_x": "Límite de rendimiento (%)",
+                "eje_y": "Temperatura final (°C)",
+                "series": [("T_final(L)", datos["temperaturas_limite"], "#1565C0")],
+                "referencia_y": (datos["meta"], "Meta"),
+                "referencia_x": datos["limite_recomendado"],
+            }
+
+        series = grafica["series"]
+        puntos = [punto for _etiqueta, valores, _color in series for punto in valores]
+        if grafica.get("marcadores"):
+            puntos.extend(zip(*grafica["marcadores"]))
+        if not puntos:
+            return
+
+        minimo_x = min(punto[0] for punto in puntos)
+        maximo_x = max(punto[0] for punto in puntos)
+        valores_y = [punto[1] for punto in puntos]
+        referencia_y = grafica.get("referencia_y")
+        if referencia_y is not None:
+            valores_y.append(referencia_y[0])
+        minimo_y = min(valores_y)
+        maximo_y = max(valores_y)
+        margen_y = max((maximo_y - minimo_y) * 0.1, 1.0)
+        if "rango_y" in grafica:
+            minimo_y, maximo_y = grafica["rango_y"]
+        else:
+            minimo_y -= margen_y
+            maximo_y += margen_y
+        if math.isclose(minimo_x, maximo_x):
+            maximo_x = minimo_x + 1.0
+        if math.isclose(minimo_y, maximo_y):
+            maximo_y = minimo_y + 1.0
+
+        izquierda, derecha = 76, ancho - 24
+        arriba, abajo = 56, alto - 58
+        canvas.create_text(
+            ancho / 2,
+            20,
+            text=grafica["titulo"],
+            fill="#263238",
+            font=("Arial", 13, "bold"),
+        )
+
+        def proyectar(x, y):
+            px = izquierda + (x - minimo_x) * (derecha - izquierda) / (maximo_x - minimo_x)
+            py = abajo - (y - minimo_y) * (abajo - arriba) / (maximo_y - minimo_y)
+            return px, py
+
+        for indice in range(6):
+            fraccion = indice / 5
+            x = izquierda + fraccion * (derecha - izquierda)
+            y = abajo - fraccion * (abajo - arriba)
+            valor_x = minimo_x + fraccion * (maximo_x - minimo_x)
+            valor_y = minimo_y + fraccion * (maximo_y - minimo_y)
+            canvas.create_line(x, arriba, x, abajo, fill="#ECEFF1")
+            canvas.create_line(izquierda, y, derecha, y, fill="#ECEFF1")
+            canvas.create_text(x, abajo + 14, text=f"{valor_x:.1f}", fill="#546E7A", font=("Arial", 8))
+            canvas.create_text(
+                izquierda - 9,
+                y,
+                text=f"{valor_y:.1f}",
+                anchor="e",
+                fill="#546E7A",
+                font=("Arial", 8),
+            )
+
+        canvas.create_line(izquierda, abajo, derecha, abajo, fill="#455A64", width=2)
+        canvas.create_line(izquierda, arriba, izquierda, abajo, fill="#455A64", width=2)
+        canvas.create_text(
+            (izquierda + derecha) / 2,
+            alto - 15,
+            text=grafica["eje_x"],
+            fill="#37474F",
+            font=("Arial", 9),
+        )
+        canvas.create_text(
+            18,
+            (arriba + abajo) / 2,
+            text=grafica["eje_y"],
+            angle=90,
+            fill="#37474F",
+            font=("Arial", 9),
+        )
+
+        for indice, (etiqueta, valores, color) in enumerate(series):
+            coordenadas = [proyectar(x, y) for x, y in valores]
+            for inicio, fin in zip(coordenadas, coordenadas[1:]):
+                canvas.create_line(*inicio, *fin, fill=color, width=2)
+            leyenda_x = izquierda + indice * 150
+            canvas.create_line(leyenda_x, 40, leyenda_x + 22, 40, fill=color, width=3)
+            canvas.create_text(leyenda_x + 28, 40, text=etiqueta, anchor="w", fill="#37474F")
+
+        if grafica.get("marcadores"):
+            marcadores_x, marcadores_y = grafica["marcadores"]
+            for x, y in zip(marcadores_x, marcadores_y):
+                px, py = proyectar(x, y)
+                canvas.create_oval(px - 4, py - 4, px + 4, py + 4, fill="#D32F2F", outline="white")
+            canvas.create_oval(izquierda + 155, 36, izquierda + 163, 44, fill="#D32F2F", outline="white")
+            canvas.create_text(izquierda + 168, 40, text="Mediciones", anchor="w", fill="#37474F")
+
+        if referencia_y is not None:
+            y_ref, etiqueta = referencia_y
+            _x_ref, py_ref = proyectar(minimo_x, y_ref)
+            canvas.create_line(izquierda, py_ref, derecha, py_ref, fill="#D32F2F", dash=(5, 3), width=2)
+            canvas.create_text(
+                derecha - 4,
+                py_ref - 9,
+                text=f"{etiqueta}: {y_ref:.1f} °C",
+                anchor="e",
+                fill="#B71C1C",
+                font=("Arial", 8, "bold"),
+            )
+
+        limite_recomendado = grafica.get("referencia_x")
+        if limite_recomendado is not None:
+            valores_limite = datos["temperaturas_limite"]
+            temperatura_recomendada = min(
+                valores_limite,
+                key=lambda punto: abs(punto[0] - limite_recomendado * 100),
+            )[1]
+            px_ref, py_ref = proyectar(limite_recomendado * 100, temperatura_recomendada)
+            canvas.create_line(px_ref, arriba, px_ref, abajo, fill="#2E7D32", dash=(4, 3), width=2)
+            canvas.create_oval(px_ref - 5, py_ref - 5, px_ref + 5, py_ref + 5, fill="#2E7D32")
+
     def _calcular(self):
         try:
             tiempos, usos = self._obtener_datos()
             parametros = self.parametros.copy()
+            parametros["t_inicio"] = tiempos[0]
             parametros["t_final"] = tiempos[-1]
-            if parametros["t_final"] <= 0:
-                raise ValueError("El tiempo final debe ser mayor que cero.")
+            parametros["t_duracion"] = parametros["t_final"] - parametros["t_inicio"]
+            if parametros["t_duracion"] <= 0:
+                raise ValueError("El intervalo entre mediciones debe ser mayor que cero.")
             coeficientes, matriz_inicial, pasos_interpolacion = polinomio_unico(
                 tiempos,
                 usos,
             )
 
-            paso, _cantidad = self._paso_efectivo(parametros["t_final"], DATOS_EJEMPLO["paso"])
+            paso, _cantidad = self._paso_efectivo(parametros["t_duracion"], DATOS_EJEMPLO["paso"])
 
             def objetivo(limite):
                 return self._temperatura_final(limite, coeficientes, parametros, paso) - parametros["T_objetivo"]
@@ -384,7 +587,7 @@ class InterfazApp(tk.Tk):
             funcion_rk = crear_funcion(1.0, parametros, coeficientes)
             xs, temperaturas, pasos_rk = runge_kutta_detallado(
                 funcion_rk,
-                0.0,
+                parametros["t_inicio"],
                 parametros["T_inicial"],
                 parametros["t_final"],
                 paso,
@@ -454,18 +657,23 @@ class InterfazApp(tk.Tk):
                 limite_recomendado = None
                 temperatura_con_limite = None
 
-            paso_fino = parametros["t_final"] / 360.0
+            paso_fino = parametros["t_duracion"] / 360.0
             tiempos_finos, temperaturas_finas = runge_kutta(
                 crear_funcion(1.0, parametros, coeficientes),
-                0.0,
+                parametros["t_inicio"],
                 parametros["T_inicial"],
                 parametros["t_final"],
                 paso_fino,
             )
-            minuto_cruce = minuto_cruce_meta(
+            tiempo_cruce = minuto_cruce_meta(
                 tiempos_finos,
                 temperaturas_finas,
                 parametros["T_objetivo"],
+            )
+            minuto_cruce = (
+                None
+                if tiempo_cruce is None
+                else tiempo_cruce - parametros["t_inicio"]
             )
 
             if estado_tipo == "meta_inalcanzable":
@@ -504,7 +712,7 @@ class InterfazApp(tk.Tk):
             )
             estado_conclusion = {
                 "estado": estado_tipo,
-                "duracion_minutos": parametros["t_final"],
+                "duracion_minutos": parametros["t_duracion"],
                 "temperatura_meta": parametros["T_objetivo"],
                 "limite_optimo": limite_optimo,
                 "limite_recomendado": limite_recomendado,
@@ -536,6 +744,32 @@ class InterfazApp(tk.Tk):
             }
             self._mostrar_conclusion(redactar_conclusion(estado_conclusion))
             self._ultimo_estado_conclusion = estado_conclusion
+            muestras_tiempo = [
+                parametros["t_inicio"] + parametros["t_duracion"] * indice / 120
+                for indice in range(121)
+            ]
+            self._datos_graficas = {
+                "tiempos": tiempos,
+                "usos": usos,
+                "uso_estimado": [
+                    (
+                        tiempo,
+                        max(0.0, min(100.0, evaluar_polinomio(coeficientes, tiempo))),
+                    )
+                    for tiempo in muestras_tiempo
+                ],
+                "temperaturas": list(zip(xs, temperaturas)),
+                "meta": parametros["T_objetivo"],
+                "temperaturas_limite": [
+                    (
+                        limite * 100,
+                        self._temperatura_final(limite, coeficientes, parametros, paso),
+                    )
+                    for limite in (indice / 20 for indice in range(1, 21))
+                ],
+                "limite_recomendado": limite_recomendado,
+            }
+            self._dibujar_grafica()
             self._estado_resultado_var.set("Resultados actualizados.")
             self.notebook.select(3)
         except (ValueError, ArithmeticError, OverflowError) as exc:
@@ -553,131 +787,148 @@ class InterfazApp(tk.Tk):
         meta,
     ):
         lineas = [
-            "BÚSQUEDA DEL LÍMITE DE RENDIMIENTO",
-            f"Meta de temperatura final: {meta:.2f} °C",
+            "F(L) = T_final(L) - T_meta",
+            f"T_meta = {meta:.4f} °C",
             "",
-            "Para encontrar el límite, el programa probó un valor a la mitad del rango. "
-            "Según el resultado, conservó la mitad donde está la solución y repitió el proceso. "
-            "En este modelo, la temperatura final cambia linealmente con el límite. "
-            "Aun así, usamos bisección para practicar un método que también sirve con modelos no lineales.",
-            "",
-            f"Rango inicial probado: {intervalo_inicial[0] * 100:.0f}% a {intervalo_inicial[1] * 100:.0f}%.",
-            f"Diferencia en el primer extremo: {valor_inferior_inicial:.4f} °C.",
-            f"Diferencia en el segundo extremo: {valor_superior_inicial:.4f} °C.",
+            self._formatear_tabla(
+                ["L (%)", "F(L) = T_final - T_meta (°C)"],
+                [
+                    [f"{intervalo_inicial[0] * 100:.2f}", f"{valor_inferior_inicial:.6f}"],
+                    [f"{intervalo_inicial[1] * 100:.2f}", f"{valor_superior_inicial:.6f}"],
+                ],
+            ),
         ]
         if intervalo is None or resultado is None:
             lineas.extend([
                 "",
-                "No se ejecutó bisección porque no se encontró un intervalo con cambio de signo.",
-                f"En L = {DATOS_EJEMPLO['busqueda_minima'] * 100:.0f}%: "
-                f"{objetivo(DATOS_EJEMPLO['busqueda_minima']):.4f} °C respecto a la meta.",
-                f"En L = 100%: {objetivo(1.0):.4f} °C respecto a la meta.",
+                self._formatear_tabla(
+                    ["L (%)", "F(L) (°C)"],
+                    [
+                        [
+                            f"{limite * 100:.2f}",
+                            f"{objetivo(limite):.6f}",
+                        ]
+                        for limite in (DATOS_EJEMPLO["busqueda_minima"], 1.0)
+                    ],
+                ),
             ])
             return "\n".join(lineas)
 
         if intervalo_cambiado:
             lineas.extend([
                 "",
-                "El intervalo inicial no contenía la respuesta.",
-                "Se buscó automáticamente entre 5% y 100%, en pasos de 5%.",
+                "F(L_inf) * F(L_sup) >= 0",
+                f"L_usado = [{intervalo[0] * 100:.2f}, {intervalo[1] * 100:.2f}] %",
             ])
         lineas.extend([
             "",
-            f"Intervalo que contiene la respuesta: {intervalo[0] * 100:.2f}% a "
-            f"{intervalo[1] * 100:.2f}%.",
-            "",
-            "Tabla de bisección: cada fila muestra el punto medio probado y el rango que se conserva.",
+            "L_m = (L_inferior + L_superior) / 2",
+            "F(L_inf) * F(L_m) < 0 -> [L_inf, L_m]",
+            "F(L_inf) * F(L_m) > 0 -> [L_m, L_sup]",
             self._formatear_tabla(
                 [
-                    "Paso",
-                    "Desde (%)",
-                    "Hasta (%)",
-                    "Prueba (%)",
-                    "Temperatura - meta (°C)",
-                    "Cambio (%)",
-                    "Decisión",
+                    "n",
+                    "L_inf (%)",
+                    "L_sup (%)",
+                    "F(L_inf) (°C)",
+                    "F(L_sup) (°C)",
+                    "L_m (%)",
+                    "F(L_m) (°C)",
+                    "E_a (%)",
+                    "L_siguiente (%)",
                 ],
                 [
                     [
                         fila["paso"],
                         f"{fila['inferior'] * 100:.4f}",
                         f"{fila['superior'] * 100:.4f}",
+                        f"{fila['f_inferior']:.5f}",
+                        f"{fila['f_superior']:.5f}",
                         f"{fila['medio'] * 100:.4f}",
                         f"{fila['f_medio']:.5f}",
                         "---" if fila["error"] is None else f"{fila['error']:.4f}",
-                        fila["decision"],
+                        (
+                            f"[{fila['medio'] * 100:.4f}, {fila['medio'] * 100:.4f}]"
+                            if abs(fila["f_medio"]) <= 1e-12
+                            else (
+                                f"[{fila['inferior'] * 100:.4f}, {fila['medio'] * 100:.4f}]"
+                                if fila["f_inferior"] * fila["f_medio"] < 0
+                                else f"[{fila['medio'] * 100:.4f}, {fila['superior'] * 100:.4f}]"
+                            )
+                        ),
                     ]
                     for fila in resultado["detalle"]
                 ],
             ),
             "",
-            f"Límite óptimo: {resultado['raiz'] * 100:.4f}%.",
-            f"Error aproximado final: ±{resultado['error_aproximado'] * 100:.6f} puntos porcentuales.",
+            self._formatear_tabla(
+                ["L_optimo (%)", "Error aproximado (p.p.)"],
+                [[
+                    f"{resultado['raiz'] * 100:.6f}",
+                    f"{resultado['error_aproximado'] * 100:.6f}",
+                ]],
+            ),
         ])
         return "\n".join(lineas)
 
     def _crear_salida_interpolacion(self, tiempos, usos, coeficientes, matriz_inicial, pasos):
+        variables = [f"t^{grado}" if grado > 1 else ("t" if grado == 1 else "1")
+                     for grado in range(len(tiempos))]
         lineas = [
-            "PASO 1: INTERPOLACIÓN DE LAS MEDICIONES",
-            "Usamos los puntos de tiempo y uso para construir una curva P(t).",
-            "P(t) estima el uso del equipo entre las mediciones registradas.",
-            "",
-            "Mediciones ingresadas:",
+            "1. INTERPOLACIÓN",
+            "P(t_i) = P_i",
             self._formatear_tabla(
-                ["Punto", "Tiempo (min)", "Uso del equipo (%)"],
+                ["i", "t_i (min)", "P_i (%)"],
                 [
                     [indice, f"{tiempo:.2f}", f"{uso:.2f}"]
                     for indice, (tiempo, uso) in enumerate(zip(tiempos, usos), start=1)
                 ],
             ),
             "",
-            "1A. Sistema que se resuelve",
-            "Cada fila representa a_i + a_1*t + a_2*t^2 + ... = uso medido.",
+            "V * a = p",
             self._formatear_tabla(
-                [f"a{i}" for i in range(len(tiempos))] + ["Uso (%)"],
+                variables + ["P_i (%)"],
                 [[f"{valor:.6g}" for valor in fila] for fila in matriz_inicial],
             ),
             "",
-            "1B. Eliminación de Gauss-Jordan, columna por columna",
-            "En cada paso se normaliza el pivote y se elimina esa incógnita de las demás filas.",
+            "R_j <- R_j / pivote;  R_i <- R_i - m_ij * R_j",
         ]
         for paso in pasos:
             lineas.extend([
                 "",
-                f"Después de procesar la columna a{paso['columna']}:",
+                f"j = {paso['columna'] + 1}",
                 self._formatear_tabla(
-                    [f"a{i}" for i in range(len(tiempos))] + ["Uso"],
+                    variables + ["P_i (%)"],
                     [[f"{valor:.6g}" for valor in fila] for fila in paso["matriz"]],
                 ),
             ])
         lineas.extend([
             "",
-            "1C. Polinomio obtenido:",
-            formatear_polinomio(coeficientes),
-            "",
-            "Los coeficientes corresponden a a0 + a1*t + a2*t^2 + ...",
-            "La curva pasa por las mediciones; entre ellas el programa estima el uso.",
+            self._formatear_tabla(
+                ["Coeficiente", "Valor"],
+                [[f"a_{i}", f"{valor:.8g}"] for i, valor in enumerate(coeficientes)],
+            ),
+            formatear_polinomio(coeficientes).replace("x", "t"),
         ])
         return "\n".join(lineas)
 
     def _crear_salida_runge_kutta(self, tiempos, temperaturas, pasos, parametros, paso):
         lineas = [
-            "PASO 2: CÁLCULO DE LA TEMPERATURA CON RUNGE-KUTTA 4",
-            "Partimos de la temperatura inicial y avanzamos en intervalos de tiempo.",
-            "La fórmula calcula el calor que genera el equipo menos el calor que se disipa.",
-            "dT/dt = alfa * L * P(t) - k * (T - T_ambiente)",
+            "2. RUNGE-KUTTA DE CUARTO ORDEN",
+            "dT/dt = f(t,T) = alfa * L * P(t) - k * (T - T_ambiente)",
             "",
-            f"Temperatura inicial: {parametros['T_inicial']:.2f} °C",
-            f"Temperatura ambiente: {parametros['T_ambiente']:.2f} °C",
-            f"Uso del equipo para esta tabla: 100%; tamaño de paso: {paso:.4g} min.",
+            f"t_0 = {tiempos[0]:.4f} min;  T_0 = {parametros['T_inicial']:.4f} °C;  "
+            f"T_ambiente = {parametros['T_ambiente']:.4f} °C",
+            f"L = 1;  h = {paso:.6g} min;  T_meta = {parametros['T_objetivo']:.4f} °C",
             "",
-            "2A. Qué significan k1, k2, k3 y k4:",
-            "Son cuatro estimaciones de cuánto cambia la temperatura dentro de cada paso.",
-            "RK4 las combina para calcular la siguiente temperatura con mayor precisión.",
+            "k_1 = f(t_n, T_n)",
+            "k_2 = f(t_n + h/2, T_n + h*k_1/2)",
+            "k_3 = f(t_n + h/2, T_n + h*k_2/2)",
+            "k_4 = f(t_n + h, T_n + h*k_3)",
+            "T_(n+1) = T_n + h*(k_1 + 2*k_2 + 2*k_3 + k_4)/6",
             "",
-            "2B. Desarrollo de cada paso:",
             self._formatear_tabla(
-                ["Paso", "Minuto t", "Paso h", "T inicio (°C)", "k1", "k2", "k3", "k4", "T siguiente (°C)"],
+                ["n", "t_n (min)", "h (min)", "T_n (°C)", "k_1", "k_2", "k_3", "k_4", "T_(n+1) (°C)"],
                 [
                     [
                         fila["paso"],
@@ -694,14 +945,11 @@ class InterfazApp(tk.Tk):
                 ],
             ),
             "",
-            "2C. Temperatura estimada durante toda la sesión:",
             self._formatear_tabla(
-                ["Tiempo (min)", "Temperatura (°C)"],
+                ["t_n (min)", "T_n (°C)"],
                 [[f"{tiempo:.3f}", f"{temperatura:.4f}"]
                  for tiempo, temperatura in zip(tiempos, temperaturas)],
             ),
-            "",
-            f"Sin limitar el rendimiento, la temperatura final estimada es {temperaturas[-1]:.4f} °C.",
         ]
         return "\n".join(lineas)
 
