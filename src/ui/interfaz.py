@@ -2,21 +2,23 @@
 
 from __future__ import annotations
 
+import json
 import math
 import tkinter as tk
-from tkinter import messagebox, ttk
+from datetime import datetime
+from tkinter import filedialog, messagebox, ttk
 
-from .interpolacion import polinomio_unico
-from .modelo import DATOS_EJEMPLO, PARAMETROS_DEFECTO
-from .polinomio import evaluar_polinomio, formatear_polinomio
-from .raices import biseccion, buscar_intervalo_cambio_signo
-from .runge_kutta import (
+from ..configuracion import DATOS_EJEMPLO, PARAMETROS_DEFECTO
+from ..numerico.interpolacion import polinomio_unico
+from ..numerico.polinomio import evaluar_polinomio, formatear_polinomio
+from ..numerico.raices import biseccion, buscar_intervalo_cambio_signo
+from ..numerico.runge_kutta import (
     crear_funcion,
     minuto_cruce_meta,
     runge_kutta,
     runge_kutta_detallado,
 )
-from .conclusion import redactar_conclusion
+from ..reportes.conclusion import redactar_conclusion
 
 
 class InterfazApp(tk.Tk):
@@ -30,11 +32,15 @@ class InterfazApp(tk.Tk):
         self.parametros = PARAMETROS_DEFECTO.copy()
         self.data_vars = []
         self._dialogo_parametros = None
-        self._datos_graficas = None
+        self._ultimo_calculo = None
+        self._graficas = {}
+        self._datos_modificados = False
         self._estado_resultado_var = tk.StringVar(value="Ingresa datos y calcula.")
         self._crear_interfaz()
+        self._crear_menu()
         self._generar_tabla(len(DATOS_EJEMPLO["tiempo"]))
         self._cargar_ejemplo()
+        self._datos_modificados = False
 
     def _crear_interfaz(self):
         estilo = ttk.Style(self)
@@ -44,7 +50,7 @@ class InterfazApp(tk.Tk):
         principal = ttk.Frame(self, padding=12)
         principal.pack(fill="both", expand=True)
         principal.columnconfigure(0, weight=1)
-        principal.rowconfigure(3, weight=1)
+        principal.rowconfigure(4, weight=1)
 
         ttk.Label(
             principal,
@@ -66,12 +72,31 @@ class InterfazApp(tk.Tk):
             side="right",
         )
 
+        archivo_bar = ttk.Frame(principal)
+        archivo_bar.grid(row=2, column=0, sticky="ew", pady=(0, 8))
+        ttk.Label(archivo_bar, text="Archivo:").pack(side="left")
+        ttk.Button(
+            archivo_bar,
+            text="Cargar datos...",
+            command=self._cargar_datos,
+        ).pack(side="left", padx=3)
+        ttk.Button(
+            archivo_bar,
+            text="Guardar datos...",
+            command=self._guardar_datos,
+        ).pack(side="left", padx=3)
+        ttk.Button(
+            archivo_bar,
+            text="Exportar informe...",
+            command=self._exportar_informe,
+        ).pack(side="left", padx=3)
+
         tabla = ttk.LabelFrame(principal, text="Uso del equipo por minuto", padding=6)
-        tabla.grid(row=2, column=0, sticky="ew", pady=(0, 8))
+        tabla.grid(row=3, column=0, sticky="ew", pady=(0, 8))
         self.table_inner = tabla
 
         acciones = ttk.Frame(principal)
-        acciones.grid(row=3, column=0, sticky="nsew")
+        acciones.grid(row=4, column=0, sticky="nsew")
         acciones.rowconfigure(1, weight=1)
         acciones.columnconfigure(0, weight=1)
         ttk.Button(acciones, text="CALCULAR", command=self._calcular).grid(
@@ -144,36 +169,60 @@ class InterfazApp(tk.Tk):
             panel.columnconfigure(0, weight=1)
             self.texts[titulo] = salida
 
-        panel_graficas = ttk.Frame(self.notebook, padding=8)
-        self.notebook.add(panel_graficas, text="5. Gráficas")
-        panel_graficas.rowconfigure(1, weight=1)
-        panel_graficas.columnconfigure(0, weight=1)
-        selector = ttk.Frame(panel_graficas)
-        selector.grid(row=0, column=0, sticky="ew", pady=(0, 8))
-        ttk.Label(selector, text="Gráfica:").pack(side="left", padx=(0, 6))
-        self.grafica_var = tk.StringVar(value="Uso del equipo")
-        selector_graficas = ttk.Combobox(
-            selector,
-            textvariable=self.grafica_var,
-            values=(
-                "Uso del equipo",
-                "Temperatura durante la sesión",
-                "Temperatura final según el límite",
-            ),
-            state="readonly",
-            width=38,
+        self._crear_panel_graficas()
+        self.notebook.bind(
+            "<<NotebookTabChanged>>",
+            lambda _event: self.after_idle(self._redibujar_graficas),
         )
-        selector_graficas.pack(side="left")
-        selector_graficas.bind("<<ComboboxSelected>>", self._dibujar_grafica)
-        self.grafica_canvas = tk.Canvas(
-            panel_graficas,
-            background="white",
-            highlightthickness=1,
-            highlightbackground="#CFD8DC",
+
+    def _crear_panel_graficas(self):
+        panel = ttk.Frame(self.notebook)
+        self.notebook.add(panel, text="5. Gráficas")
+        panel.columnconfigure(0, weight=1)
+        panel.rowconfigure(0, weight=1)
+        panel.rowconfigure(1, weight=1)
+
+        for clave, fila, relleno in (
+            ("temperatura", 0, (0, 6)),
+            ("carga", 1, 0),
+        ):
+            canvas = tk.Canvas(
+                panel,
+                background="white",
+                highlightthickness=1,
+                highlightbackground="#B0BEC5",
+            )
+            canvas.grid(row=fila, column=0, sticky="nsew", pady=relleno)
+            canvas.bind("<Configure>", lambda _event: self._redibujar_graficas())
+            self._graficas[clave] = canvas
+
+        self._dibujar_mensaje_graficas("Calcula para ver las gráficas.")
+
+    def _crear_menu(self):
+        barra = tk.Menu(self, tearoff=False)
+        archivo = tk.Menu(barra, tearoff=False)
+        archivo.add_command(
+            label="Cargar datos...",
+            accelerator="Ctrl+O",
+            command=self._cargar_datos,
         )
-        self.grafica_canvas.grid(row=1, column=0, sticky="nsew")
-        self.grafica_canvas.bind("<Configure>", self._dibujar_grafica)
-        self._dibujar_grafica()
+        archivo.add_command(
+            label="Guardar datos...",
+            accelerator="Ctrl+S",
+            command=self._guardar_datos,
+        )
+        archivo.add_command(
+            label="Exportar informe...",
+            accelerator="Ctrl+E",
+            command=self._exportar_informe,
+        )
+        archivo.add_separator()
+        archivo.add_command(label="Salir", command=self.destroy)
+        barra.add_cascade(label="Archivo", menu=archivo)
+        self.config(menu=barra)
+        self.bind("<Control-o>", lambda _event: self._cargar_datos())
+        self.bind("<Control-s>", lambda _event: self._guardar_datos())
+        self.bind("<Control-e>", lambda _event: self._exportar_informe())
 
     def _generar_tabla(self, cantidad):
         try:
@@ -207,10 +256,8 @@ class InterfazApp(tk.Tk):
         self.n_var.set(str(cantidad))
 
     def _marcar_resultados_desactualizados(self, *_args):
+        self._datos_modificados = True
         self._estado_resultado_var.set("Datos modificados; vuelve a calcular.")
-        self._datos_graficas = None
-        if hasattr(self, "grafica_canvas"):
-            self._dibujar_grafica()
 
     def _actualizar_tabla(self):
         try:
@@ -233,6 +280,190 @@ class InterfazApp(tk.Tk):
         ):
             x_var.set(str(tiempo))
             y_var.set(str(uso))
+
+    def _guardar_datos(self):
+        try:
+            tiempos, usos = self._obtener_datos()
+        except ValueError as exc:
+            messagebox.showerror("Datos inválidos", str(exc), parent=self)
+            return
+        ruta = filedialog.asksaveasfilename(
+            parent=self,
+            title="Guardar datos",
+            defaultextension=".json",
+            filetypes=[("Datos JSON", "*.json"), ("Todos los archivos", "*.*")],
+            initialfile="datos_termicos.json",
+        )
+        if not ruta:
+            return
+        contenido = {
+            "version": 1,
+            "parametros": self.parametros,
+            "mediciones": {"tiempo": tiempos, "uso": usos},
+        }
+        try:
+            with open(ruta, "w", encoding="utf-8") as archivo:
+                json.dump(contenido, archivo, ensure_ascii=False, indent=2)
+        except OSError as exc:
+            messagebox.showerror("No se pudo guardar", str(exc), parent=self)
+            return
+        self._estado_resultado_var.set("Datos guardados.")
+
+    def _cargar_datos(self):
+        ruta = filedialog.askopenfilename(
+            parent=self,
+            title="Cargar datos",
+            filetypes=[("Datos JSON", "*.json"), ("Todos los archivos", "*.*")],
+        )
+        if not ruta:
+            return
+        try:
+            with open(ruta, "r", encoding="utf-8") as archivo:
+                contenido = json.load(archivo)
+            tiempos, usos, parametros = self._leer_datos_json(contenido)
+        except (OSError, ValueError) as exc:
+            messagebox.showerror("No se pudo cargar", str(exc), parent=self)
+            return
+        if self._dialogo_parametros is not None and self._dialogo_parametros.winfo_exists():
+            self._dialogo_parametros.destroy()
+            self._dialogo_parametros = None
+        self.parametros = parametros
+        self._generar_tabla(len(tiempos))
+        for (x_var, y_var), tiempo, uso in zip(self.data_vars, tiempos, usos):
+            x_var.set(f"{tiempo:g}")
+            y_var.set(f"{uso:g}")
+        self._ultimo_calculo = None
+        self._datos_modificados = True
+        self._estado_resultado_var.set("Datos cargados; vuelve a calcular.")
+        self._redibujar_graficas()
+
+    @staticmethod
+    def _leer_datos_json(contenido):
+        if not isinstance(contenido, dict):
+            raise ValueError("El archivo debe contener un objeto JSON.")
+        mediciones = contenido.get("mediciones")
+        if not isinstance(mediciones, dict):
+            raise ValueError("Falta la sección 'mediciones'.")
+        tiempos = mediciones.get("tiempo")
+        usos = mediciones.get("uso")
+        if not isinstance(tiempos, list) or not isinstance(usos, list):
+            raise ValueError("Las mediciones deben incluir listas 'tiempo' y 'uso'.")
+        if len(tiempos) != len(usos) or len(tiempos) < 2:
+            raise ValueError("Debe haber al menos dos mediciones con tiempo y uso.")
+        try:
+            tiempos = [float(valor) for valor in tiempos]
+            usos = [float(valor) for valor in usos]
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Los tiempos y usos deben ser numéricos.") from exc
+        if any(not math.isfinite(valor) for valor in tiempos + usos):
+            raise ValueError("Los tiempos y usos deben ser finitos.")
+        if any(anterior >= actual for anterior, actual in zip(tiempos, tiempos[1:])):
+            raise ValueError("Los tiempos deben estar en orden estrictamente creciente.")
+        if any(tiempo < 0 or not 0 <= uso <= 100 for tiempo, uso in zip(tiempos, usos)):
+            raise ValueError("Se requiere tiempo >= 0 y uso entre 0 y 100 %.")
+
+        parametros = PARAMETROS_DEFECTO.copy()
+        recibidos = contenido.get("parametros", {})
+        if not isinstance(recibidos, dict):
+            raise ValueError("La sección 'parametros' debe ser un objeto.")
+        for clave in parametros:
+            if clave not in recibidos:
+                continue
+            try:
+                valor = float(recibidos[clave])
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"El parámetro '{clave}' debe ser numérico.") from exc
+            if not math.isfinite(valor):
+                raise ValueError(f"El parámetro '{clave}' debe ser finito.")
+            if clave in ("alfa", "k") and valor < 0:
+                raise ValueError(f"El parámetro '{clave}' no puede ser negativo.")
+            if clave == "T_objetivo" and valor <= 0:
+                raise ValueError("La temperatura objetivo debe ser mayor que cero.")
+            parametros[clave] = valor
+        return tiempos, usos, parametros
+
+    def _exportar_informe(self):
+        if self._ultimo_calculo is None:
+            messagebox.showinfo(
+                "Sin resultados",
+                "Primero calcula para poder exportar el informe.",
+                parent=self,
+            )
+            return
+        ruta = filedialog.asksaveasfilename(
+            parent=self,
+            title="Exportar informe",
+            defaultextension=".txt",
+            filetypes=[("Informe de texto", "*.txt"), ("Todos los archivos", "*.*")],
+            initialfile="informe_termico.txt",
+        )
+        if not ruta:
+            return
+        try:
+            with open(ruta, "w", encoding="utf-8") as archivo:
+                archivo.write(self._crear_informe_texto())
+        except OSError as exc:
+            messagebox.showerror("No se pudo exportar", str(exc), parent=self)
+            return
+        self._estado_resultado_var.set("Informe exportado.")
+
+    def _crear_informe_texto(self):
+        datos = self._ultimo_calculo
+        estado = datos["estado_conclusion"]
+        parametros = datos["parametros"]
+        lineas = [
+            "SIMULADOR TÉRMICO DE LAPTOP",
+            "=" * 40,
+            f"Fecha: {datetime.now():%Y-%m-%d %H:%M}",
+            "",
+            "PARÁMETROS",
+            "-" * 40,
+            f"Temperatura ambiente: {parametros['T_ambiente']:.2f} °C",
+            f"Temperatura inicial: {parametros['T_inicial']:.2f} °C",
+            f"Calor por uso (alfa): {parametros['alfa']:.4f} °C/min",
+            f"Enfriamiento (k): {parametros['k']:.4f} 1/min",
+            f"Temperatura meta: {parametros['T_objetivo']:.2f} °C",
+            "",
+            "MEDICIONES",
+            "-" * 40,
+            self._formatear_tabla(
+                ["Punto", "Tiempo (min)", "Uso (%)"],
+                [
+                    [indice, f"{tiempo:.2f}", f"{uso:.2f}"]
+                    for indice, (tiempo, uso) in enumerate(
+                        zip(datos["tiempos"], datos["usos"]),
+                        start=1,
+                    )
+                ],
+            ),
+            "",
+            "RESULTADOS",
+            "-" * 40,
+        ]
+        if estado.get("limite_recomendado") is not None:
+            lineas.extend([
+                f"Límite recomendado: {estado['limite_recomendado'] * 100:.0f} %",
+                f"Pico sin límite: {estado['temperatura_maxima_sin_limite']:.2f} °C",
+                f"Pico con límite: {estado['temperatura_maxima_con_limite']:.2f} °C",
+                f"Temperatura final con límite: {estado['temperatura_final_con_limite']:.2f} °C",
+                f"Rendimiento perdido: {estado['rendimiento_perdido']:.0f} %",
+            ])
+        else:
+            lineas.append("No se encontró un límite recomendado para estos datos.")
+        lineas.extend([
+            "",
+            "CONCLUSIÓN",
+            "-" * 40,
+            self.texts["4. Resultado"].get("1.0", tk.END).strip(),
+        ])
+        for titulo in ("1. Interpolación", "2. Runge-Kutta", "3. Búsqueda de raíz"):
+            lineas.extend([
+                "",
+                titulo.upper(),
+                "-" * len(titulo),
+                self.texts[titulo].get("1.0", tk.END).strip(),
+            ])
+        return "\n".join(lineas) + "\n"
 
     def _abrir_parametros(self):
         if self._dialogo_parametros is not None and self._dialogo_parametros.winfo_exists():
@@ -343,15 +574,17 @@ class InterfazApp(tk.Tk):
         funcion = crear_funcion(limite, parametros, coeficientes)
         return runge_kutta(
             funcion,
-            parametros["t_inicio"],
+            parametros.get("t_inicio", 0.0),
             parametros["T_inicial"],
             parametros["t_final"],
             paso,
         )
 
     @classmethod
-    def _temperatura_final(cls, limite, coeficientes, parametros, paso):
-        return cls._integrar(limite, coeficientes, parametros, paso)[1][-1]
+    def _temperatura_maxima(cls, limite, coeficientes, parametros, paso):
+        tiempos, temperaturas = cls._integrar(limite, coeficientes, parametros, paso)
+        indice = max(range(len(temperaturas)), key=temperaturas.__getitem__)
+        return temperaturas[indice], tiempos[indice]
 
     @staticmethod
     def _formatear_tabla(encabezados, filas):
@@ -387,166 +620,339 @@ class InterfazApp(tk.Tk):
             salida.insert(tk.END, texto, estilo)
         salida.configure(state="disabled")
 
-    def _dibujar_grafica(self, *_args):
-        canvas = self.grafica_canvas
-        canvas.delete("all")
-        ancho = max(canvas.winfo_width(), 360)
-        alto = max(canvas.winfo_height(), 280)
-        if self._datos_graficas is None:
+    def _dibujar_mensaje_graficas(self, texto):
+        for canvas in self._graficas.values():
+            canvas.delete("all")
+            ancho = canvas.winfo_width()
+            alto = canvas.winfo_height()
+            if ancho < 20 or alto < 20:
+                ancho, alto = 300, 120
             canvas.create_text(
                 ancho / 2,
                 alto / 2,
-                text="Calcula con datos válidos para generar las gráficas.",
-                fill="#607D8B",
+                text=texto,
+                fill="#78909C",
+                font=("Arial", 11),
+            )
+
+    def _redibujar_graficas(self):
+        if not self._graficas:
+            return
+        if self._ultimo_calculo is None:
+            self._dibujar_mensaje_graficas("Calcula para ver las gráficas.")
+            return
+        self._dibujar_temperaturas(self._ultimo_calculo)
+        self._dibujar_carga(self._ultimo_calculo)
+        if self._datos_modificados:
+            canvas = self._graficas["temperatura"]
+            ancho = canvas.winfo_width()
+            alto = canvas.winfo_height()
+            if ancho > 320 and alto > 60:
+                canvas.create_rectangle(
+                    ancho - 300,
+                    alto - 34,
+                    ancho - 8,
+                    alto - 12,
+                    fill="#FFF3E0",
+                    outline="#FB8C00",
+                )
+                canvas.create_text(
+                    ancho - 14,
+                    alto - 23,
+                    text="Datos modificados; vuelve a calcular.",
+                    anchor="e",
+                    fill="#E65100",
+                    font=("Arial", 9, "bold"),
+                )
+
+    def _dibujar_temperaturas(self, datos):
+        series = [
+            (
+                "100 % del rendimiento",
+                list(zip(datos["xs_uno"], datos["temperaturas_uno"])),
+                "#C62828",
+            )
+        ]
+        if datos.get("xs_con_limite") is not None:
+            limite = datos["estado_conclusion"].get("limite_recomendado")
+            etiqueta = (
+                f"Límite {round(limite * 100)} %"
+                if limite is not None
+                else "Con límite"
+            )
+            series.append(
+                (
+                    etiqueta,
+                    list(zip(datos["xs_con_limite"], datos["temperaturas_con_limite"])),
+                    "#1565C0",
+                )
+            )
+        self._dibujar_grafica(
+            self._graficas["temperatura"],
+            series,
+            "Tiempo (min)",
+            "Temperatura (°C)",
+            "Temperatura durante la sesión",
+            objetivo=datos["parametros"]["T_objetivo"],
+            marcar_picos=True,
+        )
+
+    def _dibujar_carga(self, datos):
+        coeficientes = datos["coeficientes"]
+        t_inicio = datos["parametros"]["t_inicio"]
+        t_duracion = datos["parametros"]["t_duracion"]
+        cantidad = max(2, int(round(t_duracion)) + 1)
+        xs = [t_inicio + t_duracion * indice / (cantidad - 1) for indice in range(cantidad)]
+        ys = [
+            max(0.0, min(100.0, evaluar_polinomio(coeficientes, x)))
+            for x in xs
+        ]
+        self._dibujar_grafica(
+            self._graficas["carga"],
+            [("Carga efectiva", list(zip(xs, ys)), "#6A1B9A")],
+            "Tiempo (min)",
+            "Uso (%)",
+            "Carga del equipo durante la sesión",
+            y_minimo=0.0,
+            y_maximo=100.0,
+        )
+
+    def _dibujar_grafica(
+        self,
+        canvas,
+        series,
+        x_label,
+        y_label,
+        titulo,
+        objetivo=None,
+        y_minimo=None,
+        y_maximo=None,
+        marcar_picos=False,
+    ):
+        canvas.delete("all")
+        ancho = canvas.winfo_width()
+        alto = canvas.winfo_height()
+        if ancho < 120 or alto < 80:
+            return
+
+        margen_izq, margen_der, margen_sup, margen_inf = 62, 24, 34, 38
+        area_ancho = ancho - margen_izq - margen_der
+        area_alto = alto - margen_sup - margen_inf
+        if area_ancho <= 0 or area_alto <= 0:
+            return
+
+        puntos = [punto for _, datos, _ in series for punto in datos]
+        if not puntos:
+            canvas.create_text(
+                ancho / 2,
+                alto / 2,
+                text="Sin datos para graficar.",
+                fill="#78909C",
                 font=("Arial", 11),
             )
             return
 
-        nombre = self.grafica_var.get()
-        datos = self._datos_graficas
-        if nombre == "Uso del equipo":
-            grafica = {
-                "titulo": "Uso del equipo",
-                "eje_x": "Tiempo (min)",
-                "eje_y": "Uso (%)",
-                "series": [("P(t)", datos["uso_estimado"], "#1565C0")],
-                "marcadores": (datos["tiempos"], datos["usos"]),
-                "rango_y": (0.0, 100.0),
-            }
-        elif nombre == "Temperatura durante la sesión":
-            grafica = {
-                "titulo": "Temperatura durante la sesión (L = 100%)",
-                "eje_x": "Tiempo (min)",
-                "eje_y": "Temperatura (°C)",
-                "series": [("T(t)", datos["temperaturas"], "#E65100")],
-                "referencia_y": (datos["meta"], "Meta"),
-            }
-        else:
-            grafica = {
-                "titulo": "Temperatura final según el límite",
-                "eje_x": "Límite de rendimiento (%)",
-                "eje_y": "Temperatura final (°C)",
-                "series": [("T_final(L)", datos["temperaturas_limite"], "#1565C0")],
-                "referencia_y": (datos["meta"], "Meta"),
-                "referencia_x": datos["limite_recomendado"],
-            }
+        xs = [x for x, _ in puntos]
+        ys = [y for _, y in puntos]
+        x_min, x_max = min(xs), max(xs)
+        if math.isclose(x_max, x_min):
+            x_max = x_min + 1.0
+        y_min = min(ys) if y_minimo is None else y_minimo
+        y_max = max(ys) if y_maximo is None else y_maximo
+        if objetivo is not None:
+            y_min = min(y_min, objetivo)
+            y_max = max(y_max, objetivo)
+        if math.isclose(y_max, y_min):
+            y_max = y_min + 1.0
+        if y_minimo is None or y_maximo is None:
+            margen_y = (y_max - y_min) * 0.08
+            if y_minimo is None:
+                y_min -= margen_y
+            if y_maximo is None:
+                y_max += margen_y
+        if objetivo is not None:
+            y_min = min(y_min, objetivo)
+            y_max = max(y_max, objetivo)
 
-        series = grafica["series"]
-        puntos = [punto for _etiqueta, valores, _color in series for punto in valores]
-        if grafica.get("marcadores"):
-            puntos.extend(zip(*grafica["marcadores"]))
-        if not puntos:
-            return
+        def px(x):
+            return margen_izq + (x - x_min) / (x_max - x_min) * area_ancho
 
-        minimo_x = min(punto[0] for punto in puntos)
-        maximo_x = max(punto[0] for punto in puntos)
-        valores_y = [punto[1] for punto in puntos]
-        referencia_y = grafica.get("referencia_y")
-        if referencia_y is not None:
-            valores_y.append(referencia_y[0])
-        minimo_y = min(valores_y)
-        maximo_y = max(valores_y)
-        margen_y = max((maximo_y - minimo_y) * 0.1, 1.0)
-        if "rango_y" in grafica:
-            minimo_y, maximo_y = grafica["rango_y"]
-        else:
-            minimo_y -= margen_y
-            maximo_y += margen_y
-        if math.isclose(minimo_x, maximo_x):
-            maximo_x = minimo_x + 1.0
-        if math.isclose(minimo_y, maximo_y):
-            maximo_y = minimo_y + 1.0
+        def py(y):
+            return margen_sup + (y_max - y) / (y_max - y_min) * area_alto
 
-        izquierda, derecha = 76, ancho - 24
-        arriba, abajo = 56, alto - 58
-        canvas.create_text(
-            ancho / 2,
-            20,
-            text=grafica["titulo"],
-            fill="#263238",
-            font=("Arial", 13, "bold"),
+        canvas.create_rectangle(
+            margen_izq,
+            margen_sup,
+            margen_izq + area_ancho,
+            margen_sup + area_alto,
+            outline="",
+            fill="#FAFAFA",
         )
 
-        def proyectar(x, y):
-            px = izquierda + (x - minimo_x) * (derecha - izquierda) / (maximo_x - minimo_x)
-            py = abajo - (y - minimo_y) * (abajo - arriba) / (maximo_y - minimo_y)
-            return px, py
-
-        for indice in range(6):
-            fraccion = indice / 5
-            x = izquierda + fraccion * (derecha - izquierda)
-            y = abajo - fraccion * (abajo - arriba)
-            valor_x = minimo_x + fraccion * (maximo_x - minimo_x)
-            valor_y = minimo_y + fraccion * (maximo_y - minimo_y)
-            canvas.create_line(x, arriba, x, abajo, fill="#ECEFF1")
-            canvas.create_line(izquierda, y, derecha, y, fill="#ECEFF1")
-            canvas.create_text(x, abajo + 14, text=f"{valor_x:.1f}", fill="#546E7A", font=("Arial", 8))
+        pasos = 5
+        for indice in range(pasos + 1):
+            x = x_min + (x_max - x_min) * indice / pasos
+            y = y_min + (y_max - y_min) * indice / pasos
+            x_pix = px(x)
+            y_pix = py(y)
+            canvas.create_line(
+                x_pix,
+                margen_sup,
+                x_pix,
+                margen_sup + area_alto,
+                fill="#ECEFF1",
+            )
+            canvas.create_line(
+                margen_izq,
+                y_pix,
+                margen_izq + area_ancho,
+                y_pix,
+                fill="#ECEFF1",
+            )
             canvas.create_text(
-                izquierda - 9,
-                y,
-                text=f"{valor_y:.1f}",
+                x_pix,
+                margen_sup + area_alto + 6,
+                text=self._formatear_tick(x, x_max - x_min),
+                anchor="n",
+                fill="#546E7A",
+                font=("Arial", 8),
+            )
+            canvas.create_text(
+                margen_izq - 6,
+                y_pix,
+                text=f"{y:.1f}",
                 anchor="e",
                 fill="#546E7A",
                 font=("Arial", 8),
             )
 
-        canvas.create_line(izquierda, abajo, derecha, abajo, fill="#455A64", width=2)
-        canvas.create_line(izquierda, arriba, izquierda, abajo, fill="#455A64", width=2)
+        canvas.create_line(
+            margen_izq,
+            margen_sup,
+            margen_izq,
+            margen_sup + area_alto,
+            fill="#90A4AE",
+        )
+        canvas.create_line(
+            margen_izq,
+            margen_sup + area_alto,
+            margen_izq + area_ancho,
+            margen_sup + area_alto,
+            fill="#90A4AE",
+        )
         canvas.create_text(
-            (izquierda + derecha) / 2,
-            alto - 15,
-            text=grafica["eje_x"],
+            margen_izq + area_ancho / 2,
+            12,
+            text=titulo,
+            anchor="n",
+            fill="#263238",
+            font=("Arial", 11, "bold"),
+        )
+        canvas.create_text(
+            margen_izq + area_ancho / 2,
+            alto - 8,
+            text=x_label,
+            anchor="s",
             fill="#37474F",
             font=("Arial", 9),
         )
         canvas.create_text(
-            18,
-            (arriba + abajo) / 2,
-            text=grafica["eje_y"],
-            angle=90,
+            8,
+            margen_sup - 8,
+            text=y_label,
+            anchor="sw",
             fill="#37474F",
             font=("Arial", 9),
         )
 
-        for indice, (etiqueta, valores, color) in enumerate(series):
-            coordenadas = [proyectar(x, y) for x, y in valores]
-            for inicio, fin in zip(coordenadas, coordenadas[1:]):
-                canvas.create_line(*inicio, *fin, fill=color, width=2)
-            leyenda_x = izquierda + indice * 150
-            canvas.create_line(leyenda_x, 40, leyenda_x + 22, 40, fill=color, width=3)
-            canvas.create_text(leyenda_x + 28, 40, text=etiqueta, anchor="w", fill="#37474F")
-
-        if grafica.get("marcadores"):
-            marcadores_x, marcadores_y = grafica["marcadores"]
-            for x, y in zip(marcadores_x, marcadores_y):
-                px, py = proyectar(x, y)
-                canvas.create_oval(px - 4, py - 4, px + 4, py + 4, fill="#D32F2F", outline="white")
-            canvas.create_oval(izquierda + 155, 36, izquierda + 163, 44, fill="#D32F2F", outline="white")
-            canvas.create_text(izquierda + 168, 40, text="Mediciones", anchor="w", fill="#37474F")
-
-        if referencia_y is not None:
-            y_ref, etiqueta = referencia_y
-            _x_ref, py_ref = proyectar(minimo_x, y_ref)
-            canvas.create_line(izquierda, py_ref, derecha, py_ref, fill="#D32F2F", dash=(5, 3), width=2)
+        if objetivo is not None:
+            y_objetivo = py(objetivo)
+            canvas.create_line(
+                margen_izq,
+                y_objetivo,
+                margen_izq + area_ancho,
+                y_objetivo,
+                fill="#2E7D32",
+                dash=(5, 4),
+            )
             canvas.create_text(
-                derecha - 4,
-                py_ref - 9,
-                text=f"{etiqueta}: {y_ref:.1f} °C",
-                anchor="e",
-                fill="#B71C1C",
+                margen_izq + area_ancho - 4,
+                y_objetivo - 4,
+                text=f"Meta {objetivo:.1f} °C",
+                anchor="se",
+                fill="#2E7D32",
                 font=("Arial", 8, "bold"),
             )
 
-        limite_recomendado = grafica.get("referencia_x")
-        if limite_recomendado is not None:
-            valores_limite = datos["temperaturas_limite"]
-            temperatura_recomendada = min(
-                valores_limite,
-                key=lambda punto: abs(punto[0] - limite_recomendado * 100),
-            )[1]
-            px_ref, py_ref = proyectar(limite_recomendado * 100, temperatura_recomendada)
-            canvas.create_line(px_ref, arriba, px_ref, abajo, fill="#2E7D32", dash=(4, 3), width=2)
-            canvas.create_oval(px_ref - 5, py_ref - 5, px_ref + 5, py_ref + 5, fill="#2E7D32")
+        for _etiqueta, datos, color in series:
+            if len(datos) < 2:
+                continue
+            coordenadas = []
+            for x, y in datos:
+                coordenadas.extend([px(x), py(y)])
+            canvas.create_line(*coordenadas, fill=color, width=2)
+            if marcar_picos:
+                x_pico, y_pico = max(datos, key=lambda punto: punto[1])
+                x_pix, y_pix = px(x_pico), py(y_pico)
+                canvas.create_oval(
+                    x_pix - 4,
+                    y_pix - 4,
+                    x_pix + 4,
+                    y_pix + 4,
+                    fill=color,
+                    outline="white",
+                )
+                canvas.create_text(
+                    x_pix,
+                    y_pix - 8,
+                    text=f"{y_pico:.1f} °C",
+                    anchor="s",
+                    fill=color,
+                    font=("Arial", 8, "bold"),
+                )
+
+        self._dibujar_leyenda(canvas, series, margen_izq + 10, margen_sup + 10)
+
+    @staticmethod
+    def _formatear_tick(valor, rango):
+        if abs(rango) >= 10:
+            return f"{valor:.0f}"
+        if abs(rango) >= 1:
+            return f"{valor:.1f}"
+        return f"{valor:.2f}"
+
+    def _dibujar_leyenda(self, canvas, series, x, y):
+        if not series:
+            return
+        alto_linea = 18
+        ancho = max(len(etiqueta) for etiqueta, _, _ in series) * 6 + 44
+        alto = alto_linea * len(series) + 10
+        canvas.create_rectangle(
+            x,
+            y,
+            x + ancho,
+            y + alto,
+            fill="white",
+            outline="#CFD8DC",
+        )
+        for indice, (etiqueta, _datos, color) in enumerate(series):
+            y_linea = y + 8 + indice * alto_linea
+            canvas.create_line(
+                x + 8,
+                y_linea + 5,
+                x + 28,
+                y_linea + 5,
+                fill=color,
+                width=2,
+            )
+            canvas.create_text(
+                x + 34,
+                y_linea,
+                text=etiqueta,
+                anchor="nw",
+                fill="#263238",
+                font=("Arial", 8),
+            )
 
     def _calcular(self):
         try:
@@ -563,15 +969,28 @@ class InterfazApp(tk.Tk):
             )
 
             paso, _cantidad = self._paso_efectivo(parametros["t_duracion"], DATOS_EJEMPLO["paso"])
+            paso_objetivo = min(paso, 1.0)
 
             def objetivo(limite):
-                return self._temperatura_final(limite, coeficientes, parametros, paso) - parametros["T_objetivo"]
+                temperatura_maxima, _ = self._temperatura_maxima(
+                    limite,
+                    coeficientes,
+                    parametros,
+                    paso_objetivo,
+                )
+                return temperatura_maxima - parametros["T_objetivo"]
 
             intervalo_inicial = DATOS_EJEMPLO["intervalo"]
             f_inferior = objetivo(intervalo_inicial[0])
             f_superior = objetivo(intervalo_inicial[1])
-            f_uno = objetivo(1.0)
-            temperatura_uno = f_uno + parametros["T_objetivo"]
+            xs_uno, temperaturas_uno = self._integrar(1.0, coeficientes, parametros, paso_objetivo)
+            indice_pico_uno = max(
+                range(len(temperaturas_uno)),
+                key=temperaturas_uno.__getitem__,
+            )
+            temperatura_maxima_uno = temperaturas_uno[indice_pico_uno]
+            temperatura_final_uno = temperaturas_uno[-1]
+            minuto_pico_uno = xs_uno[indice_pico_uno]
 
             self._mostrar(
                 "1. Interpolación",
@@ -601,7 +1020,7 @@ class InterfazApp(tk.Tk):
             intervalo = None
             intervalo_cambiado = False
             estado_tipo = "normal"
-            if temperatura_uno <= parametros["T_objetivo"]:
+            if temperatura_maxima_uno <= parametros["T_objetivo"]:
                 estado_tipo = "sin_limite"
             else:
                 limite_minimo = DATOS_EJEMPLO["busqueda_minima"]
@@ -640,22 +1059,33 @@ class InterfazApp(tk.Tk):
                 elif estado_tipo == "normal":
                     estado_tipo = "sin_intervalo"
 
+            xs_con_limite = None
+            temperaturas_con_limite = None
             if resultado_biseccion is not None:
                 limite_optimo = resultado_biseccion["raiz"]
                 limite_recomendado = max(
                     limite_minimo,
                     math.floor(limite_optimo * 20.0 + 1e-12) / 20.0,
                 )
-                temperatura_con_limite = self._temperatura_final(
+                xs_con_limite, temperaturas_con_limite = self._integrar(
                     limite_recomendado,
                     coeficientes,
                     parametros,
-                    paso,
+                    paso_objetivo,
                 )
+                indice_pico_con_limite = max(
+                    range(len(temperaturas_con_limite)),
+                    key=temperaturas_con_limite.__getitem__,
+                )
+                temperatura_maxima_con_limite = temperaturas_con_limite[indice_pico_con_limite]
+                temperatura_final_con_limite = temperaturas_con_limite[-1]
+                minuto_pico_con_limite = xs_con_limite[indice_pico_con_limite]
             else:
                 limite_optimo = None
                 limite_recomendado = None
-                temperatura_con_limite = None
+                temperatura_maxima_con_limite = None
+                temperatura_final_con_limite = None
+                minuto_pico_con_limite = None
 
             paso_fino = parametros["t_duracion"] / 360.0
             tiempos_finos, temperaturas_finas = runge_kutta(
@@ -677,14 +1107,14 @@ class InterfazApp(tk.Tk):
             )
 
             if estado_tipo == "meta_inalcanzable":
-                temperatura_final_minima = self._temperatura_final(
+                temperatura_maxima_minima, _ = self._temperatura_maxima(
                     limite_minimo,
                     coeficientes,
                     parametros,
-                    paso,
+                    paso_objetivo,
                 )
             else:
-                temperatura_final_minima = None
+                temperatura_maxima_minima = None
 
             self._mostrar(
                 "3. Búsqueda de raíz",
@@ -702,7 +1132,7 @@ class InterfazApp(tk.Tk):
 
             limite_recomendado_supera_meta = (
                 limite_recomendado is not None
-                and temperatura_con_limite > parametros["T_objetivo"]
+                and temperatura_maxima_con_limite > parametros["T_objetivo"]
             )
             paso_ajustado = not math.isclose(
                 paso,
@@ -716,9 +1146,13 @@ class InterfazApp(tk.Tk):
                 "temperatura_meta": parametros["T_objetivo"],
                 "limite_optimo": limite_optimo,
                 "limite_recomendado": limite_recomendado,
-                "temperatura_final_sin_limite": temperatura_uno,
-                "temperatura_final_con_limite": temperatura_con_limite,
-                "temperatura_final_minima": temperatura_final_minima,
+                "temperatura_maxima_sin_limite": temperatura_maxima_uno,
+                "temperatura_final_sin_limite": temperatura_final_uno,
+                "minuto_del_pico_sin_limite": minuto_pico_uno,
+                "temperatura_maxima_con_limite": temperatura_maxima_con_limite,
+                "temperatura_final_con_limite": temperatura_final_con_limite,
+                "minuto_del_pico_con_limite": minuto_pico_con_limite,
+                "temperatura_maxima_minima": temperatura_maxima_minima,
                 "minuto_en_que_llega_a_la_meta_sin_limite": minuto_cruce,
                 "rendimiento_perdido": (
                     (1.0 - limite_recomendado) * 100.0
@@ -744,34 +1178,22 @@ class InterfazApp(tk.Tk):
             }
             self._mostrar_conclusion(redactar_conclusion(estado_conclusion))
             self._ultimo_estado_conclusion = estado_conclusion
-            muestras_tiempo = [
-                parametros["t_inicio"] + parametros["t_duracion"] * indice / 120
-                for indice in range(121)
-            ]
-            self._datos_graficas = {
+            self._ultimo_calculo = {
                 "tiempos": tiempos,
                 "usos": usos,
-                "uso_estimado": [
-                    (
-                        tiempo,
-                        max(0.0, min(100.0, evaluar_polinomio(coeficientes, tiempo))),
-                    )
-                    for tiempo in muestras_tiempo
-                ],
-                "temperaturas": list(zip(xs, temperaturas)),
-                "meta": parametros["T_objetivo"],
-                "temperaturas_limite": [
-                    (
-                        limite * 100,
-                        self._temperatura_final(limite, coeficientes, parametros, paso),
-                    )
-                    for limite in (indice / 20 for indice in range(1, 21))
-                ],
-                "limite_recomendado": limite_recomendado,
+                "coeficientes": coeficientes,
+                "parametros": parametros.copy(),
+                "xs_uno": xs_uno,
+                "temperaturas_uno": temperaturas_uno,
+                "xs_con_limite": xs_con_limite,
+                "temperaturas_con_limite": temperaturas_con_limite,
+                "estado_conclusion": estado_conclusion,
+                "fecha": datetime.now(),
             }
-            self._dibujar_grafica()
+            self._datos_modificados = False
             self._estado_resultado_var.set("Resultados actualizados.")
             self.notebook.select(3)
+            self.after_idle(self._redibujar_graficas)
         except (ValueError, ArithmeticError, OverflowError) as exc:
             messagebox.showerror("No se pudo calcular", str(exc), parent=self)
 
@@ -787,11 +1209,11 @@ class InterfazApp(tk.Tk):
         meta,
     ):
         lineas = [
-            "F(L) = T_final(L) - T_meta",
+            "F(L) = T_max(L) - T_meta",
             f"T_meta = {meta:.4f} °C",
             "",
             self._formatear_tabla(
-                ["L (%)", "F(L) = T_final - T_meta (°C)"],
+                ["L (%)", "F(L) = T_max - T_meta (°C)"],
                 [
                     [f"{intervalo_inicial[0] * 100:.2f}", f"{valor_inferior_inicial:.6f}"],
                     [f"{intervalo_inicial[1] * 100:.2f}", f"{valor_superior_inicial:.6f}"],
